@@ -1,114 +1,112 @@
 import socket
-import hashlib
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives.asymmetric import rsa
+import json
+from Crypto.Cipher import PKCS1_OAEP
+from Crypto.PublicKey import RSA
+import base64
 
+# Function to encrypt a message with another client's public key
+def encrypt_message_with_public_key(message, public_key):
+    public_key = RSA.import_key(public_key)
+    cipher = PKCS1_OAEP.new(public_key)
+    encrypted_message = cipher.encrypt(message.encode())
+    return base64.b64encode(encrypted_message).decode()
 
-def hash_password(password):
-    # Using SHA-256 hashing algorithm
-    hashed_password = hashlib.sha256(password.encode()).hexdigest()
-    return hashed_password
-
-
-def encrypt_data(data, public_key):
-    # Encrypt data using RSA public key
-    encrypted_data = public_key.encrypt(
-        data.encode(),
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
-        )
-    )
-    return encrypted_data
-
-def generate_keys():
-    # Generate RSA key pair
-    private_key = rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=2048,
-        backend=default_backend()
-    )
-    # Get public key
-    public_key = private_key.public_key()
-    return private_key, public_key
-
-def main():
-    # Server details
-    SERVER_IP = '127.0.0.1'
-    SERVER_PORT = 22345
-
-    # Create a socket object
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    private_key, public_key = generate_keys()
-    # Serialize the public key
-    clientKey = public_key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
-    )
-
-    try:
-        # Connect to the server
-        client_socket.connect((SERVER_IP, SERVER_PORT))
-
-        # Receive the server's public key
-        serialized_public_key = client_socket.recv(4096)
-        server_public_key = serialization.load_pem_public_key(serialized_public_key, backend=default_backend())    # Deserialize the client's public key
-
-
-        # Get username and password from the client
-        username = input("Enter username: ")
-        password = input("Enter password: ")
-
-        # Hash the password
-        hashed_password = hash_password(password)
-
-
-        data_to_send = f"{username}|{password}|{hashed_password}"
-
-        # Encrypt the data using RSA public key
-        encrypted_data = encrypt_data(data_to_send, server_public_key)
-
-        # Send encrypted data to the server as a single message
-        client_socket.sendall(encrypted_data)
-        client_socket.sendall(clientKey)
-
-        print("Data sent successfully.")
-
-        # Receive response from the server
-
-        response = client_socket.recv(1024)
-        if response == b"Login successful":
-            print("Login successful! You are now logged in.")
-            # Perform actions for a successful login
+# Function to request public key of another client
+def request_public_key(client_name):
+    request_data = {
+        "action": "get_public_key",
+        "username": client_name
+    }
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+        client.connect(('localhost', 12345))
+        client.send(json.dumps(request_data).encode())
+        response = client.recv(1024).decode()
+        response_data = json.loads(response)
+        if response_data["response"] == "Public key found":
+            return response_data["public_key"]
         else:
-            print("Register new user.")
+            print("Public key not found for the specified client.")
+            return None
 
-        partner = input("Enter partner username: ")
-        partner_data = encrypt_data(partner, server_public_key)
-        client_socket.sendall(partner_data)
+# Function to request public key of another client and send an encrypted message
+def request_public_key_and_send_message(client_name):
+    message = input("Enter the message you want to encrypt and send: ")
+    public_key = request_public_key(client_name)
+    if public_key:
+        encrypted_message = encrypt_message_with_public_key(message, public_key)
+        print("Encrypted message:", encrypted_message)
+        send_encrypted_message_to_server(client_name, encrypted_message)
+    else:
+        print("Failed to send encrypted message.")
 
-    #     partner_public_key = client_socket.recv(4096)
-    #
-    # # Decrypt the data using the private key
-    #     partner_public_decrypted_data = private_key.decrypt(
-    #     partner_public_key,
-    #     padding.OAEP(
-    #         mgf=padding.MGF1(algorithm=hashes.SHA256()),
-    #         algorithm=hashes.SHA256(),
-    #         label=None
-    #         )
-    #     )
-    #     print(partner_public_decrypted_data)
-    except Exception as e:
-        print("Error:", e)
-    finally:
-        # Close the socket
-        client_socket.close()
+# Function to send the encrypted message to the server for storage
+def send_encrypted_message_to_server(client_name, encrypted_message):
+    request_data = {
+        "action": "store_encrypted_message",
+        "client_name": client_name,
+        "encrypted_message": encrypted_message
+    }
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+        client.connect(('localhost', 12345))
+        client.send(json.dumps(request_data).encode())
+        response = client.recv(1024).decode()
+        print("Server response:", response)
 
+# Function for client registration
+def register(username, password):
+    public_key, private_key = generate_key_pair()
+    hashed_password = hash_password(password)
+    request_data = {
+        "action": "register",
+        "username": username,
+        "password": password,
+        "hashed_password": hashed_password,
+        "public_key": public_key.decode()
+    }
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+        client.connect(('localhost', 12345))
+        client.send(json.dumps(request_data).encode())
+        response = client.recv(1024).decode()
+        print(response)
+
+# Function for client login
+def login(username, password):
+    request_data = {
+        "action": "login",
+        "username": username,
+        "password": password
+    }
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+        client.connect(('localhost', 12345))
+        client.send(json.dumps(request_data).encode())
+        response = client.recv(1024).decode()
+        print(response)
+
+# Function to generate RSA key pair
+def generate_key_pair():
+    key = RSA.generate(2048)
+    return key.publickey().export_key(), key.export_key()
+
+# Main function for client operations
+def main():
+    while True:
+        print("1. Register")
+        print("2. Login")
+        print("3. Request Public Key of Another Client and Send Encrypted Message")
+        choice = input("Enter your choice (1/2/3): ")
+        if choice == '1':
+            username = input("Enter username: ")
+            password = input("Enter password: ")
+            register(username, password)
+        elif choice == '2':
+            username = input("Enter username: ")
+            password = input("Enter password: ")
+            login(username, password)
+        elif choice == '3':
+            client_name = input("Enter the name of the client whose public key you want to request: ")
+            request_public_key_and_send_message(client_name)
+        else:
+            print("Invalid choice. Please enter 1, 2, or 3.")
 
 if __name__ == "__main__":
     main()

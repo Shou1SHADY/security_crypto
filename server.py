@@ -1,167 +1,99 @@
 import socket
 import json
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives import hashes
-import threading
-import json
+import hashlib
+import os
 
-def get_public_key_for_username(username, credentials_file):
-    try:
-        with open(credentials_file, 'r') as file:
-            credentials = json.load(file)
-            for cred in credentials:
-                if cred['username'] == username:
-                    client_public_key_bytes = cred.get('client_key', None)
-                    if client_public_key_bytes:
-                        return serialization.load_pem_public_key(client_public_key_bytes.encode(), backend=default_backend())
-                    else:
-                        print("Public key not found for the username:", username)
-                        return None
-            else:
-                print("Username not found:", username)
-                return None
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print("Error reading credentials file:", e)
-        return None
-
-def handle_client(client_socket, private_key,serialized_public_key,credentials_file):
-    # Send the public key to the client
-    client_socket.sendall(serialized_public_key)
-
-    # Receive encrypted data from the client
-
-    encrypted_data = client_socket.recv(4096)
-
-    # Decrypt the data using the private key
-    decrypted_data = private_key.decrypt(
-        encrypted_data,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
-        )
-    )
-
-    # Receive the server's public key
-    client_key = client_socket.recv(4096)
-
-    client_public_key = serialization.load_pem_public_key(client_key, backend=default_backend())    # Deserialize the client's public key
-
-    print(client_key)
-    # Split the decrypted data into username, password, and hashed password
-    username, password, hashed_password = decrypted_data.decode().split('|')
-    print("Received username:", username)
-    print("Received password:", password)
-    print("Received hashed password:", hashed_password)
-
-    # Check if hashed password already exists in the file
-    try:
-        with open(credentials_file, 'r') as file:
-            credentials = json.load(file)
-            for cred in credentials:
-                if cred['hashed_password'] == hashed_password and cred['username'] == username:
-                    print("Password already exists")
-                    # Notify the client that login was successful
-                    client_socket.sendall(b"Login successful")
-                    break
-                else:
-                    # Store received credentials in JSON file
-                    new_credentials = {'username': username, 'password': password, 'hashed_password': hashed_password,"client_key":client_public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode()}
-                    credentials.append(new_credentials)
-                    with open(credentials_file, 'w') as file:
-                        json.dump(credentials, file)
-    except (FileNotFoundError, json.JSONDecodeError):
-        # If file doesn't exist or is empty, create new file and store credentials
-        new_credentials = {'username': username, 'password': password, 'hashed_password': hashed_password,"client_key": client_public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode()}
-        with open(credentials_file, 'w') as file:
-            json.dump([new_credentials], file)
-
-
-    partner_encrypted_data = client_socket.recv(4096)
-
-    # Decrypt the data using the private key
-    partner_decrypted_data = private_key.decrypt(
-        partner_encrypted_data,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
-        )
-    )
-    partner = partner_decrypted_data.decode()
-            # Search for the client's public key using the username
-    client_public_key_for_username = get_public_key_for_username(partner, credentials_file)
-    if client_public_key_for_username:
-        print("Public key found for the username:", partner)
-        # encrypted_partner_public_key = client_public_key.encrypt(
-        #     client_public_key_for_username.encode(),
-        #     padding.OAEP(
-        #         mgf=padding.MGF1(algorithm=hashes.SHA256()),
-        #         algorithm=hashes.SHA256(),
-        #         label=None
-        #     )
-        # )
-        # client_socket.sendall(encrypted_partner_public_key)
+# Function to load or create a JSON file to store client data
+def load_or_create_data():
+    if os.path.exists("client_data.json"):
+        if os.stat("client_data.json").st_size == 0:
+            return {}
+        with open("client_data.json", "r") as f:
+            return json.load(f)
     else:
-        print("Public key not found for the username:", partner)
+        with open("client_data.json", "w") as f:
+            json.dump({}, f)
+        return {}
 
+# Function to register a new client
+def register_client(username, password, hashed_password, public_key):
+    client_data = load_or_create_data()
+    client_data[username] = {
+        "hashed_password": hashed_password,
+        "public_key": public_key,
+        "messages": []  # Initialize an empty list to store messages
+    }
+    with open("client_data.json", "w") as f:
+        json.dump(client_data, f)
 
-    # Close the client socket
-    client_socket.close()
+# Function to authenticate a client
+def authenticate_client(username, password):
+    client_data = load_or_create_data()
+    if username in client_data:
+        stored_hashed_password = client_data[username]["hashed_password"]
+        hashed_password = hashlib.sha256(password.encode()).hexdigest()
+        if hashed_password == stored_hashed_password:
+            return True
+    return False
 
-def generate_keys():
-    # Generate RSA key pair
-    private_key = rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=2048,
-        backend=default_backend()
-    )
-    # Get public key
-    public_key = private_key.public_key()
-    return private_key, public_key
+# Function to handle client requests
+def handle_client(conn, addr):
+    print(f"Connected to {addr}")
+    while True:
+        data = conn.recv(1024).decode()
+        if not data:
+            break
+        request = json.loads(data)
+        if request["action"] == "register":
+            register_client(request["username"], request["password"], request["hashed_password"], request["public_key"])
+            conn.send(json.dumps({"response": "Registered successfully"}).encode())
+        elif request["action"] == "login":
+            if authenticate_client(request["username"], request["password"]):
+                conn.send(json.dumps({"response": "Successfully logged in"}).encode())
+            else:
+                conn.send(json.dumps({"response": "Login failed"}).encode())
+        elif request["action"] == "get_public_key":
+            requested_username = request["username"]
+            public_key = get_public_key(requested_username)
+            if public_key:
+                conn.send(json.dumps({"response": "Public key found", "public_key": public_key}).encode())
+            else:
+                conn.send(json.dumps({"response": "Public key not found"}).encode())
+        elif request["action"] == "store_encrypted_message":
+            client_name = request["client_name"]
+            encrypted_message = request["encrypted_message"]
+            store_encrypted_message(client_name, encrypted_message)
+            conn.send(json.dumps({"response": "Encrypted message stored successfully"}).encode())
+    conn.close()
 
+# Function to get public key of a client
+def get_public_key(username):
+    client_data = load_or_create_data()
+    if username in client_data:
+        return client_data[username]["public_key"]
+    return None
+
+# Function to store an encrypted message for a client
+def store_encrypted_message(client_name, encrypted_message):
+    client_data = load_or_create_data()
+    if client_name in client_data:
+        # Check if the 'messages' key exists for the client, if not, initialize it with an empty list
+        if 'messages' not in client_data[client_name]:
+            client_data[client_name]["messages"] = []
+        client_data[client_name]["messages"].append(encrypted_message)
+        with open("client_data.json", "w") as f:
+            json.dump(client_data, f)
+
+# Main function to start the server
 def main():
-    # Server details
-    SERVER_IP = '127.0.0.1'
-    SERVER_PORT = 22345
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(('localhost', 12345))
+    server.listen(5)
+    print("Server started. Waiting for connections...")
 
-    # Create a socket object
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-    # Bind the socket to the address
-    server_socket.bind((SERVER_IP, SERVER_PORT))
-
-    # Listen for incoming connections
-    server_socket.listen(3)
-    print("Server listening on port", SERVER_PORT)
-
-    # JSON file to store user credentials
-    credentials_file = "credentials.json"
-
-    try:
-        private_key, public_key = generate_keys()
-        # Serialize the public key
-        serialized_public_key = public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
-        )
-        while True:
-
-            # Accept a client connection
-            client_socket, client_address = server_socket.accept()
-            print("Connection established with", client_address)
-            client_thread = threading.Thread(target=handle_client, args=(client_socket, private_key,serialized_public_key,credentials_file))
-            client_thread.start()
-
-
-    except KeyboardInterrupt:
-        print("Server shutting down...")
-    finally:
-        # Close the server socket
-        server_socket.close()
+    while True:
+        conn, addr = server.accept()
+        handle_client(conn, addr)
 
 if __name__ == "__main__":
     main()
