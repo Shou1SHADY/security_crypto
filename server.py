@@ -84,7 +84,7 @@ def store_encrypted_message(client_name, encrypted_message):
         with open("client_data.json", "w") as f:
             json.dump(client_data, f)
 
-# Main function to start the server
+# Main function to start the serversasasas
 def main():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(('localhost', 12345))
