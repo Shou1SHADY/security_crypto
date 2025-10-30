@@ -4,7 +4,7 @@ from Crypto.Cipher import PKCS1_OAEP
 from Crypto.PublicKey import RSA
 import base64
 
-# Function to encrypt a message with another client's public key
+# Function to encrypt a message with another client's public key changes
 def encrypt_message_with_public_key(message, public_key):
     public_key = RSA.import_key(public_key)
     cipher = PKCS1_OAEP.new(public_key)
